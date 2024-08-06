@@ -6,6 +6,8 @@ Created on Fri Mar 22 11:26:05 2024
 This script does pairwise comparisons for a given feature (indexed
 by 'featID' variable). 
 
+To not run in parallel, just loop over FeatID
+
 Note: Both ends of a feature are used (e.g., Larger and Smaller)
 
 @author: smazurchuk
@@ -32,7 +34,7 @@ model_id = "google/gemma-1.1-7b-it"
 dtype    = torch.float16
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 
-model = AutoModelForCausalLM.from_pretrained(
+model, params = AutoModelForCausalLM.from_pretrained(
     model_id,
     torch_dtype=dtype,
     device_map="auto")
@@ -68,122 +70,124 @@ featDict = {
     'temperature': ['more hot, warm, or tropical','colder, cooler, or more frigid']}
 entries = sorted(list(hRatings.keys()))
 
-for featID in range(len(entries)):
-    entry = entries[featID]
-    if not os.path.exists(f'output_rdms/{entry}_v4.npy'):
-        entry = entries[featID]
-        print(f'Working on: {entry}')
 
-        # Make new prompts
-        cat, feat = entry.split('_')
-        if cat == 'clothing':
-            cat = 'pieces of clothing'
-        if cat == 'myth':
-            cat = 'myths'
-        if cat == 'weather':
-            cat = 'weather events'
-        series = hRatings[entry].sort_index(); 
-        words = series.index.to_list()
-        nPrompts1 = []; nPrompts2 = []
-        for i in range(len(words)):
-            for j in range(len(words)):
-                if i != j:
-                    nPrompts1.append(f'Which of the following {cat} is {featDict[feat][0]}? \nA) {words[i]} \nB) {words[j]}')
-                    nPrompts2.append(f'Which of the following {cat} is {featDict[feat][1]}? \nA) {words[i]} \nB) {words[j]}')
-    
-        # Run model!
-        outputs1 = []; outputs2 = []
-        for idx in tqdm(range(len(nPrompts1))):    
-            chat1 = [
-                { "role": "user", "content": nPrompts1[idx]},
-            ]
-            chat2 = [
-                { "role": "user", "content": nPrompts2[idx]},
-            ]
-            prompt1 = tokenizer.apply_chat_template(chat1, tokenize=False, add_generation_prompt=True)
-            prompt2 = tokenizer.apply_chat_template(chat2, tokenize=False, add_generation_prompt=True)
-            # Process 1
-            inputs = tokenizer(prompt1,return_tensors="np",padding=True)
-            output = model.generate(**inputs, params=params, max_new_tokens=20, do_sample=False)
-            output_text = tokenizer.batch_decode(output.sequences, skip_special_tokens=True)
-            
-            inputs = tokenizer.encode(prompt1, add_special_tokens=False, return_tensors="pt")
-            out = model.generate(input_ids=inputs.to(model.device), max_new_tokens=10)
-            out2 = tokenizer.decode(out[0],skip_special_tokens=True)
-            outputs1.append(out2)
-            # Process 2
-            inputs = tokenizer.encode(prompt2, add_special_tokens=False, return_tensors="pt")
-            out = model.generate(input_ids=inputs.to(model.device), max_new_tokens=10)
-            out2 = tokenizer.decode(out[0],skip_special_tokens=True)
-            outputs2.append(out2)
-    
-        # Process model outputs
-        rdm1 = np.zeros((len(words),len(words))); c=0
-        exceptions = []
-        for i in range(len(words)):
-            for j in range(len(words)):
-                if i != j:
-                    w1 = words[i]; w2 = words[j]   
-                    out = outputs1[c]; comp = 10
-                    out = out.strip().lower().split('\nmodel\n')[-1]
-                    id1 = out.find(w1); id2 = out.find(w2)
-                    probWord = 'NA'
-                    if ((id1 < id2) or id2 ==-1) and id1 != -1 :
-                        probWord = w1
-                    if ((id2 < id1) or id1 == -1) and id2 != -1:
-                        probWord = w2
-                    if (' a) ' in out) or (w1 == probWord):
-                        comp = 1; 
-                    if (' b) ' in out) or (w2 == probWord):
-                        if comp == 1:
-                            comp = 10
-                        else:
-                            comp = -1;
-                    if comp not in [1,-1]:
-                        comp = 0
-                        exceptions.append([w1,w2,nPrompts1[c],out])
-                    rdm1[i,j] = comp; c+=1
-        rdm2 = np.zeros((len(words),len(words))); c=0
-        for i in range(len(words)):
-            for j in range(len(words)):
-                if i != j:
-                    w1 = words[i]; w2 = words[j]   
-                    out = outputs2[c]; comp = 10
-                    out = out.strip().lower().split('\nmodel\n')[-1]
-                    id1 = out.find(w1); id2 = out.find(w2)
-                    probWord = 'NA'
-                    if ((id1 < id2) or id2 ==-1) and id1 != -1 :
-                        probWord = w1
-                    if ((id2 < id1) or id1 == -1) and id2 != -1:
-                        probWord = w2
-                    if (' a) ' in out) or (w1 == probWord):
-                        comp = 1; 
-                    if (' b) ' in out) or (w2 == probWord):
-                        if comp == 1:
-                            comp = 10
-                        else:
-                            comp = -1;
-                    if comp not in [1,-1]:
-                        comp = 0
-                        exceptions.append([w1,w2,nPrompts2[c],out])
-                    rdm1[i,j] = comp; c+=1
-    
-        # Quick Check!
-        pred1 = rdm1.mean(1) - rdm1.mean(0)
-        act = series
-        c1 = np.corrcoef(pred1,act)[0,1]
-        pred2 = -(rdm2.mean(1) - rdm2.mean(0))
-        c2 = np.corrcoef(pred2,act)[0,1]
-        rdm = rdm1 - rdm2
-        pred = rdm.mean(1) - rdm.mean(0)
-        c = np.corrcoef(pred,act)[0,1]
+# To not run in parallel  put everything below this is a loop
+#for featID in range(len(entries)):
+entry = entries[featID]
+if not os.path.exists(f'output_rdms/{entry}_v4.npy'):
+    entry = entries[featID]
+    print(f'Working on: {entry}')
+
+    # Make new prompts
+    cat, feat = entry.split('_')
+    if cat == 'clothing':
+        cat = 'pieces of clothing'
+    if cat == 'myth':
+        cat = 'myths'
+    if cat == 'weather':
+        cat = 'weather events'
+    series = hRatings[entry].sort_index(); 
+    words = series.index.to_list()
+    nPrompts1 = []; nPrompts2 = []
+    for i in range(len(words)):
+        for j in range(len(words)):
+            if i != j:
+                nPrompts1.append(f'Which of the following {cat} is {featDict[feat][0]}? \nA) {words[i]} \nB) {words[j]}')
+                nPrompts2.append(f'Which of the following {cat} is {featDict[feat][1]}? \nA) {words[i]} \nB) {words[j]}')
+
+    # Run model!
+    outputs1 = []; outputs2 = []
+    for idx in tqdm(range(len(nPrompts1))):    
+        chat1 = [
+            { "role": "user", "content": nPrompts1[idx]},
+        ]
+        chat2 = [
+            { "role": "user", "content": nPrompts2[idx]},
+        ]
+        prompt1 = tokenizer.apply_chat_template(chat1, tokenize=False, add_generation_prompt=True)
+        prompt2 = tokenizer.apply_chat_template(chat2, tokenize=False, add_generation_prompt=True)
+        # Process 1
+        inputs = tokenizer(prompt1,return_tensors="np",padding=True)
+        output = model.generate(**inputs, params=params, max_new_tokens=20, do_sample=False)
+        output_text = tokenizer.batch_decode(output.sequences, skip_special_tokens=True)
         
-        
-        print(f'There were {len(exceptions)} exceptions')
-        print(f'Corr {entry}: \n\tpred1: {c1}  \n\tpred2: {c2} \n\tpredB: {c}')
-        
-        # Save!
-        np.save(f'output_rdms/{entry}_v4.npy',rdm)
+        inputs = tokenizer.encode(prompt1, add_special_tokens=False, return_tensors="pt")
+        out = model.generate(input_ids=inputs.to(model.device), max_new_tokens=10)
+        out2 = tokenizer.decode(out[0],skip_special_tokens=True)
+        outputs1.append(out2)
+        # Process 2
+        inputs = tokenizer.encode(prompt2, add_special_tokens=False, return_tensors="pt")
+        out = model.generate(input_ids=inputs.to(model.device), max_new_tokens=10)
+        out2 = tokenizer.decode(out[0],skip_special_tokens=True)
+        outputs2.append(out2)
+
+    # Process model outputs
+    rdm1 = np.zeros((len(words),len(words))); c=0
+    exceptions = []
+    for i in range(len(words)):
+        for j in range(len(words)):
+            if i != j:
+                w1 = words[i]; w2 = words[j]   
+                out = outputs1[c]; comp = 10
+                out = out.strip().lower().split('\nmodel\n')[-1]
+                id1 = out.find(w1); id2 = out.find(w2)
+                probWord = 'NA'
+                if ((id1 < id2) or id2 ==-1) and id1 != -1 :
+                    probWord = w1
+                if ((id2 < id1) or id1 == -1) and id2 != -1:
+                    probWord = w2
+                if (' a) ' in out) or (w1 == probWord):
+                    comp = 1; 
+                if (' b) ' in out) or (w2 == probWord):
+                    if comp == 1:
+                        comp = 10
+                    else:
+                        comp = -1;
+                if comp not in [1,-1]:
+                    comp = 0
+                    exceptions.append([w1,w2,nPrompts1[c],out])
+                rdm1[i,j] = comp; c+=1
+    rdm2 = np.zeros((len(words),len(words))); c=0
+    for i in range(len(words)):
+        for j in range(len(words)):
+            if i != j:
+                w1 = words[i]; w2 = words[j]   
+                out = outputs2[c]; comp = 10
+                out = out.strip().lower().split('\nmodel\n')[-1]
+                id1 = out.find(w1); id2 = out.find(w2)
+                probWord = 'NA'
+                if ((id1 < id2) or id2 ==-1) and id1 != -1 :
+                    probWord = w1
+                if ((id2 < id1) or id1 == -1) and id2 != -1:
+                    probWord = w2
+                if (' a) ' in out) or (w1 == probWord):
+                    comp = 1; 
+                if (' b) ' in out) or (w2 == probWord):
+                    if comp == 1:
+                        comp = 10
+                    else:
+                        comp = -1;
+                if comp not in [1,-1]:
+                    comp = 0
+                    exceptions.append([w1,w2,nPrompts2[c],out])
+                rdm1[i,j] = comp; c+=1
+
+    # Quick Check!
+    pred1 = rdm1.mean(1) - rdm1.mean(0)
+    act = series
+    c1 = np.corrcoef(pred1,act)[0,1]
+    pred2 = -(rdm2.mean(1) - rdm2.mean(0))
+    c2 = np.corrcoef(pred2,act)[0,1]
+    rdm = rdm1 - rdm2
+    pred = rdm.mean(1) - rdm.mean(0)
+    c = np.corrcoef(pred,act)[0,1]
+    
+    
+    print(f'There were {len(exceptions)} exceptions')
+    print(f'Corr {entry}: \n\tpred1: {c1}  \n\tpred2: {c2} \n\tpredB: {c}')
+    
+    # Save!
+    np.save(f'output_rdms/{entry}_v4.npy',rdm)
 
 # # Long check
 # data = []
